@@ -1,0 +1,94 @@
+version: '3.8'
+
+services:
+
+  nginx:
+    image: nginx:latest
+    container_name: nginx
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/frontend.conf:/etc/nginx/conf.d/frontend.conf
+      - ./nginx/backend.conf:/etc/nginx/conf.d/backend.conf
+      - ./nginx/redirector.conf:/etc/nginx/conf.d/redirector.conf
+      - ./frontend:/var/www/frontend
+      - ./backend:/var/www/backend
+      - ./redirector:/var/www/redirector
+      - ./nginx:/var/www/certbot
+      - ./nginx/ssl:/etc/letsencrypt
+    depends_on:
+      - frontend
+      - backend
+
+  certbot-renew:
+    image: certbot/certbot
+    container_name: certbot-renew
+    volumes:
+      - ./nginx/ssl:/etc/letsencrypt
+      - ./nginx:/var/www/certbot
+      - /var/run/docker.sock:/var/run/docker.sock
+    entrypoint: >
+      sh -c "trap exit TERM; while :; do
+        certbot renew --webroot --webroot-path=/var/www/certbot --quiet;
+        sleep 12h;
+      done"
+    depends_on:
+      - nginx
+
+  nginx-reloader:
+    image: alpine
+    container_name: nginx-reloader
+    command: sh -c "
+      apk add --no-cache inotify-tools &&
+      while true; do
+        inotifywait -e close_write,create,move,delete /etc/letsencrypt/live;
+        echo 'Certificate change detected, reloading nginx...';
+        docker kill -s HUP nginx;
+      done"
+    volumes:
+      - ./nginx/ssl:/etc/letsencrypt:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      - nginx
+
+  frontend:
+    build: ./frontend
+    container_name: frontend
+    volumes:
+      - ./frontend:/var/www/frontend
+
+  redirector:
+    build: ./redirector
+    container_name: redirector
+    volumes:
+      - ./redirector:/var/www/redirector
+    depends_on:
+      - backend_db
+
+  backend:
+    build: ./backend
+    container_name: backend
+    volumes:
+      - ./backend:/var/www/backend
+    depends_on:
+      - backend_db
+
+  backend_db:
+    image: mysql:5.7
+    container_name: backend_db
+    restart: always
+    ports:
+    - "3306:3306" 
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpass
+      MYSQL_DATABASE: short_links
+      MYSQL_USER: backend_user
+      MYSQL_PASSWORD: backend_pass
+    volumes:
+      - backend_db_data:/var/lib/mysql
+      # - ./db-init:/docker-entrypoint-initdb.d
+
+volumes:
+  backend_db_data:
